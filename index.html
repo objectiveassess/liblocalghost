@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>온라인 도어사인</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;padding:18px;max-width:820px;margin:0 auto;color:#222}
+    h1{margin-bottom:6px}
+    .board{display:flex;gap:6px;margin-top:12px}
+    .cell{flex:1;padding:18px;border-radius:8px;border:1px solid #e2e2e2;background:#fff;text-align:center;font-weight:700;position:relative;min-height:70px}
+    .cell .seat{font-weight:600;color:#0b66c2;font-size:0.95rem;margin-top:8px}
+    .arrow{position:absolute;left:50%;top:-20px;transform:translateX(-50%);width:36px;height:36px;border-radius:18px;background:#e74c3c;color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 14px rgba(0,0,0,0.12)}
+    .controls{display:flex;gap:8px;align-items:center;margin-top:14px}
+    input[type="password"], input[type="text"]{padding:8px;border-radius:8px;border:1px solid #ccc}
+    button{padding:8px 10px;border-radius:8px;border:0;background:#2d9cdb;color:#fff;cursor:pointer}
+    button.ghost{background:#6c757d}
+    .small{font-size:0.9rem;color:#666;margin-top:8px}
+    .note{font-size:0.88rem;color:#444;margin-top:12px}
+    .token-area{display:flex;gap:8px;align-items:center;margin-top:8px}
+    .statusLabel{font-size:1.05rem;font-weight:700}
+    .row{display:flex;gap:8px;align-items:center}
+  </style>
+</head>
+<body>
+  <h1>온라인 도어사인</h1>
+  <div class="small">상태: 도서관 / 운동 / 퇴근 / 휴식 — 도서관 선택 시 좌석 입력 가능</div>
+
+  <div class="board" id="board">
+    <div class="cell" data-status="library">도서관 <div class="seat" id="seat-library"></div></div>
+    <div class="cell" data-status="exercise">운동</div>
+    <div class="cell" data-status="offwork">퇴근</div>
+    <div class="cell" data-status="rest">휴식</div>
+  </div>
+
+  <div class="note">
+    <div><strong>현재 상태:</strong> <span id="currentStatus">로딩중...</span></div>
+    <div id="lastUpdated" class="small">업데이트: -</div>
+  </div>
+
+  <div class="controls" style="margin-top:12px;">
+    <input id="adminPw" type="password" placeholder="관리자 비밀번호" />
+    <button id="unlockBtn">잠금 해제</button>
+    <button id="lockBtn" class="ghost">잠금</button>
+  </div>
+
+  <div id="editor" style="margin-top:12px; display:none;">
+    <div class="row">
+      <label class="statusLabel">상태 선택:</label>
+      <button class="statusBtn" data-status="library">도서관</button>
+      <button class="statusBtn" data-status="exercise">운동</button>
+      <button class="statusBtn" data-status="offwork">퇴근</button>
+      <button class="statusBtn" data-status="rest">휴식</button>
+    </div>
+
+    <div style="margin-top:8px;">
+      <input id="seatInput" type="text" placeholder="도서관 좌석 예: 2층 315번 (1-999번)" style="width:60%" />
+      <button id="saveBtn">저장 (깃허브에 기록)</button>
+    </div>
+
+    <div class="small" style="margin-top:10px;">
+      <strong>깃허브 토큰(한 번만 붙여넣기)</strong> — 페이지가 깃허브에 바로 저장하려면 토큰 필요. (토큰은 브라우저 세션에만 저장됩니다.)
+    </div>
+    <div class="token-area">
+      <input id="tokenInput" type="text" placeholder="GitHub Personal Access Token 붙여넣기" style="width:65%" />
+      <button id="enableTokenBtn">토큰 사용 설정</button>
+      <button id="clearTokenBtn" class="ghost">토큰 제거</button>
+    </div>
+    <div id="tokenHelp" class="small">(토큰은 페이지가 열려 있는 동안만 사용됩니다. 닫으면 사라져요.)</div>
+  </div>
+
+  <div style="margin-top:18px" class="small">
+    <strong>사용 흐름</strong>: ① 비밀번호 입력→잠금 해제 → ②(처음만) 깃허브 토큰 붙여넣기→토큰 사용 설정 → ③상태 선택(도서관이면 좌석 입력) → 저장
+  </div>
+
+  <script>
+    /* ========== 꼭 수정해야 하는 값들 ========== */
+    const GITHUB_OWNER = "TODO_GITHUB_USERNAME";   // <-- 깃허브 사용자명으로 바꿔
+    const GITHUB_REPO = "TODO_REPO_NAME";          // <-- 리포 이름으로 바꿔 (예: door-sign)
+    const GITHUB_FILE_PATH = "door-sign-data.json"; // 파일명(리포에 저장할 상태 파일)
+    const BRANCH = "main";                         // 기본 브랜치 (보통 main)
+    const ADMIN_PASSWORD = "1234";                 // <-- 관리 비밀번호로 바꿔!
+    /* ========================================= */
+
+    // 내부 상태
+    let latestSha = null;
+    let ghToken = sessionStorage.getItem("gh_token") || null;
+    let unlocked = false;
+
+    // DOM
+    const currentStatusEl = document.getElementById("currentStatus");
+    const lastUpdatedEl = document.getElementById("lastUpdated");
+    const seatLibraryEl = document.getElementById("seat-library");
+    const unlockBtn = document.getElementById("unlockBtn");
+    const lockBtn = document.getElementById("lockBtn");
+    const adminPw = document.getElementById("adminPw");
+    const editor = document.getElementById("editor");
+    const tokenInput = document.getElementById("tokenInput");
+    const enableTokenBtn = document.getElementById("enableTokenBtn");
+    const clearTokenBtn = document.getElementById("clearTokenBtn");
+    const saveBtn = document.getElementById("saveBtn");
+    const seatInput = document.getElementById("seatInput");
+    const statusBtns = document.querySelectorAll(".statusBtn");
+
+    // helper: b64 unicode
+    function b64EncodeUnicode(str) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+    function b64DecodeUnicode(str) {
+      return decodeURIComponent(escape(atob(str)));
+    }
+
+    // API urls
+    function contentsUrl() {
+      return `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
+    }
+
+    async function fetchStatusFromGitHub() {
+      try {
+        const url = contentsUrl() + `?ref=${BRANCH}`;
+        const res = await fetch(url, { headers: { 'Accept': 'application/vnd.github+json' }});
+        if (res.status === 200) {
+          const j = await res.json();
+          latestSha = j.sha;
+          const raw = j.content.replace(/\n/g,'');
+          const decoded = b64DecodeUnicode(raw);
+          const data = JSON.parse(decoded);
+          applyStatusToUI(data);
+        } else if (res.status === 404) {
+          // 파일 없음 → 기본값
+          applyStatusToUI({ status: "rest", seat: "" , ts: Date.now() });
+        } else {
+          console.error("fetch status error", res.status);
+          applyStatusToUI({ status: "rest", seat: "" , ts: Date.now()});
+        }
+      } catch(err) {
+        console.error("fetch err", err);
+        applyStatusToUI({ status: "rest", seat: "" , ts: Date.now()});
+      }
+    }
+
+    function applyStatusToUI(data) {
+      const s = data.status || "rest";
+      currentStatusEl.textContent = statusText(s);
+      // seat
+      if (s === "library" && data.seat) {
+        seatLibraryEl.textContent = data.seat;
+      } else {
+        seatLibraryEl.textContent = "";
+      }
+      if (data.ts) {
+        lastUpdatedEl.textContent = "업데이트: " + new Date(data.ts).toLocaleString();
+      } else {
+        lastUpdatedEl.textContent = "업데이트: -";
+      }
+      // show arrow visually: add arrow to the right cell
+      document.querySelectorAll(".cell").forEach(c => { c.querySelector(".arrow")?.remove(); });
+      const target = document.querySelector(`.cell[data-status="${s}"]`);
+      if (target) {
+        const a = document.createElement("div");
+        a.className = "arrow";
+        a.textContent = "⬇";
+        target.appendChild(a);
+      }
+    }
+
+    function statusText(code) {
+      if (code === "library") return "도서관";
+      if (code === "exercise") return "운동";
+      if (code === "offwork") return "퇴근";
+      if (code === "rest") return "휴식";
+      return code;
+    }
+
+    // save to GitHub (create or update)
+    async function saveStatusToGitHub(obj) {
+      if (!ghToken) { alert("깃허브 토큰이 설정되어 있지 않습니다. 토큰을 붙여넣어 주세요."); return; }
+      try {
+        const contentStr = JSON.stringify(obj, null, 2);
+        const body = {
+          message: `Update door sign (${obj.status}${obj.seat? ' - ' + obj.seat : ''})`,
+          content: b64EncodeUnicode(contentStr),
+          branch: BRANCH
+        };
+        if (latestSha) body.sha = latestSha; // update
+        const res = await fetch(contentsUrl(), {
+          method: 'PUT',
+          headers: {
+            'Accept': 'application/vnd.github+json',
+            'Authorization': 'token ' + ghToken,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+        const j = await res.json();
+        if (res.ok) {
+          latestSha = j.content.sha;
+          alert("저장 완료! 친구들이 페이지를 새로고침하면 최신 상태를 볼 수 있어요.");
+          applyStatusToUI(obj);
+        } else {
+          console.error("save error", j);
+          alert("저장 실패: " + (j.message || res.status));
+        }
+      } catch(err) {
+        console.error("save err", err);
+        alert("저장 중 오류가 발생했습니다.");
+      }
+    }
+
+    // UI actions
+    unlockBtn.addEventListener("click", () => {
+      const v = adminPw.value;
+      if (v === ADMIN_PASSWORD) {
+        unlocked = true;
+        editor.style.display = "block";
+        adminPw.value = "";
+        alert("잠금 해제되었습니다. (이제 토큰을 붙여넣고 저장하세요.)");
+      } else {
+        alert("비밀번호가 틀렸습니다.");
+      }
+    });
+    lockBtn.addEventListener("click", () => {
+      unlocked = false;
+      editor.style.display = "none";
+      // remove token from session if any
+      sessionStorage.removeItem("gh_token");
+      ghToken = null;
+      tokenInput.value = "";
+      alert("편집 잠금됨. (세션 토큰은 삭제되었습니다.)");
+    });
+
+    enableTokenBtn.addEventListener("click", () => {
+      const t = tokenInput.value.trim();
+      if (!t) { alert("토큰을 붙여넣어 주세요."); return; }
+      // store in sessionStorage only
+      sessionStorage.setItem("gh_token", t);
+      ghToken = t;
+      alert("토큰이 세션에 저장되었습니다. 이제 저장 버튼으로 깃허브에 기록할 수 있어요.");
+      tokenInput.value = "";
+    });
+    clearTokenBtn.addEventListener("click", () => {
+      sessionStorage.removeItem("gh_token");
+      ghToken = null;
+      alert("세션 토큰을 제거했습니다.");
+    });
+
+    // status buttons
+    statusBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (!unlocked) { alert("먼저 잠금 해제하세요."); return; }
+        const s = btn.dataset.status;
+        // if library, show seat input
+        if (s === "library") {
+          seatInput.focus();
+        } else {
+          seatInput.value = "";
+        }
+      });
+    });
+
+    saveBtn.addEventListener("click", async () => {
+      if (!unlocked) { alert("먼저 잠금 해제하세요."); return; }
+      // which status chosen? we read from clicked statusBtn (or fallback to current displayed)
+      // For simplicity: find last clicked button by active style - but we don't have. We'll take seatInput + current selected arrow cell.
+      // We'll prompt user to pick via the row of buttons: check which one was last clicked by marking it
+      // Simpler UX: ask user to click the desired status button and then Save.
+      // We'll detect the status by checking which status button was last focused.
+      // Simpler solution: show prompt
+      const status = await chooseStatusPrompt();
+      if (!status) return;
+      let seat = "";
+      if (status === "library") {
+        seat = seatInput.value.trim();
+        // validate basic pattern e.g., "2층 315번" or "B1층 12번"
+        if (seat !== "") {
+          // allow any string, but warn if pattern weird
+          if (!/^[0-9]+층\s*\d+번$/.test(seat) && !/^[Bb]1층\s*\d+번$/.test(seat) && !/^[Bb]1\s*\d+번$/.test(seat)) {
+            // don't block; just confirm
+            if (!confirm("좌석 형식이 일반적이지 않습니다. 계속 저장할까요?\n예시: 2층 315번 또는 B1층 12번")) {
+              return;
+            }
+          }
+        }
+      } else {
+        seat = "";
+      }
+      const data = { status, seat, ts: Date.now() };
+      // save to GitHub
+      await saveStatusToGitHub(data);
+    });
+
+    // helper prompt to choose status (since buttons don't store active state)
+    function chooseStatusPrompt(){
+      return new Promise((resolve) => {
+        const pick = prompt("저장할 상태를 입력하세요 (도서관 / 운동 / 퇴근 / 휴식). 정확히 입력하면 됩니다.");
+        if (!pick) { resolve(null); return; }
+        const p = pick.trim();
+        if (p === "도서관") resolve("library");
+        else if (p === "운동") resolve("exercise");
+        else if (p === "퇴근") resolve("offwork");
+        else if (p === "휴식") resolve("rest");
+        else {
+          alert("알 수 없는 상태입니다. 정확히 '도서관' / '운동' / '퇴근' / '휴식' 중 하나를 입력하세요.");
+          resolve(null);
+        }
+      });
+    }
+
+    // 초기 로드
+    (function init(){
+      // if session token present, keep it
+      if (sessionStorage.getItem("gh_token")) {
+        ghToken = sessionStorage.getItem("gh_token");
+      }
+      fetchStatusFromGitHub();
+    })();
+  </script>
+</body>
+</html>
